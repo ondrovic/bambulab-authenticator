@@ -1,14 +1,52 @@
 package httpclient
 
 import (
+	"bytes"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
+	"github.com/ondrovic/bambulab-authenticator/internal/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// Define a mock client that implements the HTTPClient interface.
+type mockClient struct {
+	DoFunc func(req *http.Request) (*http.Response, error)
+}
+
+func (m *mockClient) Do(req *http.Request) (*http.Response, error) {
+	return m.DoFunc(req)
+}
+
+// Helper to create a *http.Response with a given status code, body, and optional headers.
+func createMockResponse(statusCode int, body string, headers map[string]string) *http.Response {
+	resp := httptest.NewRecorder()
+	resp.WriteHeader(statusCode)
+	resp.Body = bytes.NewBufferString(body)
+	for k, v := range headers {
+		resp.Header().Set(k, v)
+	}
+
+	return resp.Result()
+}
+
+// containsSubstring is a helper function for partial error message matching.
+func containsSubstring(s, substr string) bool {
+	return strings.Contains(s, substr)
+}
+
+// Helper function to create a test cookie
+func createCookie(name, value string) *http.Cookie {
+	return &http.Cookie{
+		Name:  name,
+		Value: value,
+	}
+}
 
 func TestInitClient(t *testing.T) {
 	// Arrange
@@ -102,5 +140,165 @@ func TestAddDefaultHeadersToRequest(t *testing.T) {
 	// Compare the headers
 	if !reflect.DeepEqual(req.Header, expectedHeaders) {
 		t.Errorf("Headers do not match. Expected: %v, got: %v", expectedHeaders, req.Header)
+	}
+}
+
+func TestMapCookiesToResponse(t *testing.T) {
+	tests := []struct {
+		name        string
+		cookies     []*http.Cookie
+		expected    *types.LoginResponse
+		expectError bool
+	}{
+		{
+			name: "All cookies present",
+			cookies: []*http.Cookie{
+				createCookie("token", "access-token-value"),
+				createCookie("refreshToken", "refresh-token-value"),
+				createCookie("expiresIn", "3600"),
+				createCookie("refreshExpiresIn", "3600"),
+			},
+			expected: &types.LoginResponse{
+				AccessToken:      "access-token-value",
+				RefreshToken:     "refresh-token-value",
+				ExpiresIn:        3600,
+				RefreshExpiresIn: 3600,
+			},
+			expectError: false,
+		},
+		{
+			name: "Missing expiresIn",
+			cookies: []*http.Cookie{
+				createCookie("token", "access-token-value"),
+				createCookie("refreshToken", "refresh-token-value"),
+			},
+			expected: &types.LoginResponse{
+				AccessToken:  "access-token-value",
+				RefreshToken: "refresh-token-value",
+			},
+			expectError: false,
+		},
+		{
+			name: "Invalid expiresIn",
+			cookies: []*http.Cookie{
+				createCookie("token", "access-token-value"),
+				createCookie("refreshToken", "refresh-token-value"),
+				createCookie("expiresIn", "invalid"),
+			},
+			expected:    nil,
+			expectError: true,
+		},
+		{
+			name: "Invalid refreshExpiresIn",
+			cookies: []*http.Cookie{
+				createCookie("token", "access-token-value"),
+				createCookie("refreshToken", "refresh-token-value"),
+				createCookie("expiresIn", "3600"),
+				createCookie("refreshExpiresIn", "invalid"),
+			},
+			expected:    nil,
+			expectError: true,
+		},
+		{
+			name:        "No cookies provided",
+			cookies:     []*http.Cookie{},
+			expected:    &types.LoginResponse{},
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := MapCookiesToResponse(tt.cookies)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				assert.Nil(t, result)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.expected.AccessToken, result.AccessToken)
+				assert.Equal(t, tt.expected.RefreshToken, result.RefreshToken)
+				assert.Equal(t, tt.expected.ExpiresIn, result.ExpiresIn)
+			}
+		})
+	}
+}
+
+func TestRequest(t *testing.T) {
+	tests := []struct {
+		name           string
+		method         string
+		url            string
+		payload        []byte
+		mockResponse   *http.Response
+		mockError      error
+		expectedResult *types.LoginResponse
+		expectedError  string
+	}{
+		{
+			name:    "Successful request",
+			method:  http.MethodPost,
+			url:     "http://example.com/login",
+			payload: []byte(`{"username":"user","password":"pass"}`),
+			mockResponse: createMockResponse(http.StatusOK, `{"accessToken":"mockToken"}`, map[string]string{
+				"Content-Type": "application/json",
+			}),
+			expectedResult: &types.LoginResponse{AccessToken: "mockToken"},
+		},
+		{
+			name:          "HTTP client error",
+			method:        http.MethodGet,
+			url:           "http://example.com/fail",
+			payload:       nil,
+			mockError:     errors.New("network error"),
+			expectedError: "request failed: network error",
+		},
+		{
+			name:    "Invalid JSON response",
+			method:  http.MethodGet,
+			url:     "http://example.com/invalid-json",
+			payload: nil,
+			mockResponse: createMockResponse(http.StatusOK, `invalid-json`, map[string]string{
+				"Content-Type": "application/json",
+			}),
+			expectedError: "failed to unmarshal response body: invalid character 'i' looking for beginning of value",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Set up the mock client with the desired behavior.
+			mockClient := &mockClient{
+				DoFunc: func(req *http.Request) (*http.Response, error) {
+					if tt.mockError != nil {
+						return nil, tt.mockError
+					}
+					return tt.mockResponse, nil
+				},
+			}
+
+			// Set the mock client in place of the real client
+			Client = mockClient
+
+			// Run the Request function
+			result, err := Request(tt.method, tt.url, tt.payload)
+
+			// Check the expected error
+			if tt.expectedError != "" {
+				if err == nil || !containsSubstring(err.Error(), tt.expectedError) {
+					t.Fatalf("expected error %q, got %v", tt.expectedError, err)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			// Check the expected result
+			if tt.expectedResult != nil && (result == nil || result.AccessToken != tt.expectedResult.AccessToken) {
+				t.Fatalf("expected result %v, got %v", tt.expectedResult, result)
+			}
+		})
 	}
 }
