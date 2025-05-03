@@ -2,6 +2,18 @@
 [![testing](https://github.com/ondrovic/bambulab-authenticator/actions/workflows/testing.yml/badge.svg)](https://github.com/ondrovic/bambulab-authenticator/actions/workflows/testing.yml)
 [![releaser](https://github.com/ondrovic/bambulab-authenticator/actions/workflows/releaser.yml/badge.svg)](https://github.com/ondrovic/bambulab-authenticator/actions/workflows/releaser.yml)
 
+> **📢 Project Archive Notice**  
+> 
+> As of May 2, 2025, this codebase is now archived.  
+> All future updates, issues, and pull requests for the BambuLab Authentication CLI will be managed in the dedicated repository:  
+> 
+> 🔗 https://github.com/ondrovic/bambulab-authentication-cli  
+> 
+> Please update your bookmarks and direct any new contributions there.  
+> 
+> Thank you for your continued support!
+
+
 # Bambulab Authenticator CLI
 
 The Bambulab Authenticator CLI is a command-line tool that allows you to authenticate with your Bambulab credentials and save the authentication information to a file.
